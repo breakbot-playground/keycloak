@@ -50,8 +50,9 @@ import org.keycloak.migration.MigrationModelManager;
 import org.keycloak.migration.ModelVersion;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
-import org.keycloak.models.dblock.DBLockManager;
-import org.keycloak.models.dblock.DBLockProvider;
+import org.keycloak.models.dblock.DBLockGlobalLockProvider;
+import org.keycloak.models.locking.GlobalLockProvider;
+import org.keycloak.models.locking.LockAcquiringTimeoutException;
 import org.keycloak.provider.EnvironmentDependentProviderFactory;
 import org.keycloak.provider.ProviderConfigProperty;
 import org.keycloak.provider.ProviderConfigurationBuilder;
@@ -106,13 +107,12 @@ public class LegacyJpaConnectionProviderFactory extends AbstractJpaConnectionPro
     public void postInit(KeycloakSessionFactory factory) {
         super.postInit(factory);
 
-        KeycloakSession session = factory.create();
         String id = null;
         String version = null;
         String schema = getSchema();
         boolean schemaChanged;
 
-        try (Connection connection = getConnection()) {
+        try (Connection connection = getConnection(); KeycloakSession session = factory.create()) {
             try {
                 try (Statement statement = connection.createStatement()) {
                     try (ResultSet rs = statement.executeQuery(String.format(SQL_GET_LATEST_VERSION, getSchema(schema)))) {
@@ -130,8 +130,6 @@ public class LegacyJpaConnectionProviderFactory extends AbstractJpaConnectionPro
             schemaChanged = createOrUpdateSchema(schema, version, connection, session);
         } catch (SQLException cause) {
             throw new RuntimeException("Failed to update database.", cause);
-        } finally {
-            session.close();
         }
 
         if (schemaChanged || Environment.isImportExportMode()) {
@@ -291,25 +289,27 @@ public class LegacyJpaConnectionProviderFactory extends AbstractJpaConnectionPro
     }
 
     private void update(Connection connection, String schema, KeycloakSession session, JpaUpdaterProvider updater) {
-        DBLockManager dbLockManager = new DBLockManager(session);
-        DBLockProvider dbLock2 = dbLockManager.getDBLock();
-        dbLock2.waitForLock(DBLockProvider.Namespace.DATABASE);
+        GlobalLockProvider globalLock = session.getProvider(GlobalLockProvider.class);
         try {
-            updater.update(connection, schema);
-        } finally {
-            dbLock2.releaseLock();
+            globalLock.withLock(DBLockGlobalLockProvider.DATABASE, innerSession -> {
+                updater.update(connection, schema);
+                return null;
+            });
+        } catch (LockAcquiringTimeoutException e) {
+            throw new RuntimeException("Acquiring database failed.", e);
         }
     }
 
     private void export(Connection connection, String schema, File databaseUpdateFile, KeycloakSession session,
             JpaUpdaterProvider updater) {
-        DBLockManager dbLockManager = new DBLockManager(session);
-        DBLockProvider dbLock2 = dbLockManager.getDBLock();
-        dbLock2.waitForLock(DBLockProvider.Namespace.DATABASE);
+        GlobalLockProvider globalLock = session.getProvider(GlobalLockProvider.class);
         try {
-            updater.export(connection, schema, databaseUpdateFile);
-        } finally {
-            dbLock2.releaseLock();
+            globalLock.withLock(DBLockGlobalLockProvider.DATABASE, innerSession -> {
+                updater.export(connection, schema, databaseUpdateFile);
+                return null;
+            });
+        } catch (LockAcquiringTimeoutException e) {
+            throw new RuntimeException("Acquiring database failed.", e);
         }
     }
 

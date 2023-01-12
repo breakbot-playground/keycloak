@@ -18,9 +18,8 @@
 package org.keycloak.testsuite.rest;
 
 import org.jboss.resteasy.annotations.cache.NoCache;
-import org.jboss.resteasy.spi.HttpRequest;
+import org.keycloak.http.HttpRequest;
 import org.keycloak.Config;
-import org.keycloak.authorization.policy.evaluation.Realm;
 import org.keycloak.common.Profile;
 import org.keycloak.common.util.HtmlUtils;
 import org.keycloak.common.util.Time;
@@ -96,7 +95,6 @@ import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
-import javax.ws.rs.core.Context;
 import javax.ws.rs.core.Cookie;
 import javax.ws.rs.core.Response;
 import java.io.File;
@@ -111,6 +109,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -126,8 +125,7 @@ public class TestingResourceProvider implements RealmResourceProvider {
     private final KeycloakSession session;
     private final Map<String, TimerProvider.TimerTaskContext> suspendedTimerTasks;
 
-    @Context
-    private HttpRequest request;
+    private final HttpRequest request;
 
     @Override
     public Object getResource() {
@@ -137,6 +135,7 @@ public class TestingResourceProvider implements RealmResourceProvider {
     public TestingResourceProvider(KeycloakSession session, Map<String, TimerProvider.TimerTaskContext> suspendedTimerTasks) {
         this.session = session;
         this.suspendedTimerTasks = suspendedTimerTasks;
+        this.request = session.getContext().getHttpRequest();
     }
 
     @POST
@@ -239,6 +238,7 @@ public class TestingResourceProvider implements RealmResourceProvider {
     @Produces(MediaType.APPLICATION_JSON)
     public Map<String, String> setTimeOffset(Map<String, String> time) {
         int offset = Integer.parseInt(time.get("offset"));
+
         Time.setOffset(offset);
 
         // Time offset was restarted
@@ -587,9 +587,8 @@ public class TestingResourceProvider implements RealmResourceProvider {
     @Produces(MediaType.APPLICATION_JSON)
     public String getSSOCookieValue() {
         Map<String, Cookie> cookies = request.getHttpHeaders().getCookies();
-        Cookie cookie = CookieHelper.getCookie(cookies, AuthenticationManager.KEYCLOAK_IDENTITY_COOKIE);
-        if (cookie == null) return null;
-        return cookie.getValue();
+        Optional<Cookie> cookie = CookieHelper.getCookie(cookies, AuthenticationManager.KEYCLOAK_IDENTITY_COOKIE);
+        return cookie.map(Cookie::getValue).orElse(null);
     }
 
 

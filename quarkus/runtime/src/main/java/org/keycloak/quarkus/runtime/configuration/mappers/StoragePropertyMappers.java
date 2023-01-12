@@ -18,9 +18,11 @@
 package org.keycloak.quarkus.runtime.configuration.mappers;
 
 import static java.util.Optional.of;
+import static java.util.function.Predicate.not;
 import static org.keycloak.quarkus.runtime.configuration.mappers.PropertyMapper.fromOption;
 
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import org.keycloak.config.StorageOptions;
 import org.keycloak.config.StorageOptions.StorageType;
@@ -195,10 +197,10 @@ final class StoragePropertyMappers {
                         .transformer(StoragePropertyMappers::resolveMapStorageProvider)
                         .paramLabel("type")
                         .build(),
-                fromOption(StorageOptions.STORAGE_DBLOCK)
-                        .to("kc.spi-dblock-provider")
+                fromOption(StorageOptions.STORAGE_GLOBAL_LOCK_PROVIDER)
+                        .to("kc.spi-global-lock-provider")
                         .mapFrom("storage")
-                        .transformer(StoragePropertyMappers::getDbLockProvider)
+                        .transformer(StoragePropertyMappers::getGlobalLockProvider)
                         .paramLabel("type")
                         .build(),
                 fromOption(StorageOptions.STORAGE_CACHE_REALM_ENABLED)
@@ -301,15 +303,42 @@ final class StoragePropertyMappers {
     }
 
     private static Optional<String> getAreaStorage(Optional<String> storage, ConfigSourceInterceptorContext context) {
-        return of(storage.isEmpty() ? "jpa" : "map");
+        if (storage.isEmpty()) {
+            return of("jpa");
+        }
+
+        if (Stream.of(StorageType.values()).map(Enum::name).anyMatch(storage.get()::equals)) {
+            return of("map");
+        }
+
+        return storage;
     }
 
     private static Optional<String> getCacheStorage(Optional<String> storage, ConfigSourceInterceptorContext context) {
-        return of(storage.isEmpty() ? "infinispan" : "map");
+        if (storage.isEmpty()) {
+            return of("infinispan");
+        }
+
+        if (Stream.of(StorageType.values()).map(Enum::name).anyMatch(storage.get()::equals)) {
+            return of("map");
+        }
+
+        return storage;
     }
 
-    private static Optional<String> getDbLockProvider(Optional<String> storage, ConfigSourceInterceptorContext context) {
-        return of(storage.isEmpty() ? "jpa" : "none");
+    private static Optional<String> getGlobalLockProvider(Optional<String> storage, ConfigSourceInterceptorContext context) {
+        try {
+            if (storage.isPresent()) {
+                return of(storage.map(StorageType::valueOf)
+                        .filter(type -> type.equals(StorageType.hotrod))
+                        .map(StorageType::getProvider)
+                        .orElse("none"));
+            }
+        } catch (IllegalArgumentException iae) {
+            throw new IllegalArgumentException("Invalid storage provider: " + storage.orElse(null), iae);
+        }
+
+        return of("dblock");
     }
 
     private static Optional<String> getUserSessionPersisterStorage(Optional<String> storage, ConfigSourceInterceptorContext context) {

@@ -18,22 +18,23 @@
 package org.keycloak.services.managers;
 
 import org.jboss.logging.Logger;
-import org.keycloak.common.ClientConnection;
-import org.keycloak.common.util.ServerCookie.SameSiteAttributeValue;
 import org.keycloak.models.ClientModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserSessionModel;
 import org.keycloak.protocol.RestartLoginCookie;
+import org.keycloak.services.util.CookieBuilder;
 import org.keycloak.services.util.CookieHelper;
 import org.keycloak.sessions.AuthenticationSessionModel;
 import org.keycloak.sessions.RootAuthenticationSessionModel;
 import org.keycloak.sessions.StickySessionEncoderProvider;
 
+import javax.ws.rs.core.NewCookie;
 import javax.ws.rs.core.UriInfo;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import static org.keycloak.utils.LockObjectsForModification.lockUserSessionsForModification;
@@ -149,7 +150,13 @@ public class AuthenticationSessionManager {
         StickySessionEncoderProvider encoder = session.getProvider(StickySessionEncoderProvider.class);
         String encodedAuthSessionId = encoder.encodeSessionId(authSessionId);
 
-        CookieHelper.addCookie(AUTH_SESSION_ID, encodedAuthSessionId, cookiePath, null, null, -1, sslRequired, true, SameSiteAttributeValue.NONE);
+        final NewCookie cookie = new CookieBuilder(AUTH_SESSION_ID, encodedAuthSessionId)
+                .path(cookiePath)
+                .secure(sslRequired)
+                .httpOnly(true)
+                .build();
+
+        session.getContext().getHttpResponse().addCookie(cookie);
 
         log.debugf("Set AUTH_SESSION_ID cookie with value %s", encodedAuthSessionId);
     }
@@ -184,10 +191,10 @@ public class AuthenticationSessionManager {
      * @return list of the values of AUTH_SESSION_ID cookies. It is assumed that values could be encoded with route added (EG. "5e161e00-d426-4ea6-98e9-52eb9844e2d7.node1" )
      */
     List<String> getAuthSessionCookies(RealmModel realm) {
-        Set<String> cookiesVal = CookieHelper.getCookieValue(AUTH_SESSION_ID);
+        Set<String> cookiesVal = CookieHelper.getCookieValue(session.getContext().getRequestHeaders(), AUTH_SESSION_ID);
 
         if (cookiesVal.size() > 1) {
-            AuthenticationManager.expireOldAuthSessionCookie(realm, session.getContext().getUri(), session.getContext().getConnection());
+            AuthenticationManager.expireOldAuthSessionCookie(realm, session.getContext().getUri(), session);
         }
 
         List<String> authSessionIds = cookiesVal.stream().limit(AUTH_SESSION_COOKIE_LIMIT).collect(Collectors.toList());
@@ -196,7 +203,18 @@ public class AuthenticationSessionManager {
             log.debugf("Not found AUTH_SESSION_ID cookie");
         }
 
-        return authSessionIds;
+        return authSessionIds.stream().filter(new Predicate<String>() {
+            @Override
+            public boolean test(String id) {
+                StickySessionEncoderProvider encoder = session.getProvider(StickySessionEncoderProvider.class);
+                // in case the id is encoded with a route when running in a cluster
+                String decodedId = encoder.decodeSessionId(id);
+                // we can't blindly trust the cookie and assume it is valid and referencing a valid root auth session
+                // but make sure the root authentication session actually exists
+                // without this check there is a risk of resolving user sessions from invalid root authentication sessions as they share the same id
+                return session.authenticationSessions().getRootAuthenticationSession(realm, decodedId) != null;
+            }
+        }).collect(Collectors.toList());
     }
 
 
@@ -208,9 +226,8 @@ public class AuthenticationSessionManager {
 
         // expire restart cookie
         if (expireRestartCookie) {
-            ClientConnection clientConnection = session.getContext().getConnection();
             UriInfo uriInfo = session.getContext().getUri();
-            RestartLoginCookie.expireRestartCookie(realm, clientConnection, uriInfo);
+            RestartLoginCookie.expireRestartCookie(realm, uriInfo, session);
         }
     }
 
